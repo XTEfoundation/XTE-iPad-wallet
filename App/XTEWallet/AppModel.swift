@@ -15,7 +15,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var nodeError: String?
     @Published private(set) var syncError: String?
     @Published private(set) var isSyncing = false
-    @Published var node: NodeInfo { didSet { Settings.selectedNode = node; restartSync() } }
+    @Published var node: NodeInfo {
+        didSet {
+            Settings.selectedNode = node
+            // Failover inside the running sync loop switches nodes without cancelling it.
+            if node != oldValue && !switchingNodeInSync { restartSync() }
+        }
+    }
+    private var switchingNodeInSync = false
+    /// Incremented per restart; a superseded sync loop never touches the UI state.
+    private var syncGeneration = 0
     @Published var nodes: [NodeInfo] = [XTEConfig.defaultNode]
     @Published var pendingURI: PaymentURI?
     @Published var lastError: String?
@@ -139,7 +148,10 @@ final class AppModel: ObservableObject {
 
     func didBecomeActive() {
         defer { backgroundedAt = nil }
-        if let t = backgroundedAt, Date().timeIntervalSince(t) >= TimeInterval(prefs.autoLockSeconds) { lock() }
+        // With "lock immediately" the wallet was already locked when it went to the background;
+        // locking again here would cancel the sync the user just unlocked (shown as "cancelled").
+        guard prefs.autoLockSeconds > 0, phase == .unlocked, let t = backgroundedAt else { return }
+        if Date().timeIntervalSince(t) >= TimeInterval(prefs.autoLockSeconds) { lock() }
     }
 
     // MARK: Security settings
@@ -253,7 +265,9 @@ final class AppModel: ObservableObject {
             // node from the official list that answers. A node the user picked is never replaced.
             if node == XTEConfig.defaultNode, let alternative = await firstReachablePublicNode() {
                 nodeError = nil
-                node = alternative   // didSet persists the choice and restarts sync
+                switchingNodeInSync = true
+                node = alternative   // persisted; the running sync loop picks it up
+                switchingNodeInSync = false
             }
         }
     }
@@ -270,16 +284,24 @@ final class AppModel: ObservableObject {
 
     func restartSync() {
         syncTask?.cancel()
+        syncTask = nil
+        syncGeneration += 1
+        isSyncing = false
+        syncError = nil
         guard phase == .unlocked else { return }
         let scanner: BlockScanner
         if let keys { scanner = BlockScanner(keys: keys) } else if let viewKeys { scanner = viewKeys.scanner } else { return }
         let synchronizer = WalletSynchronizer(scanner: scanner)
-        let client = daemon
+        let generation = syncGeneration
         syncTask = Task { [weak self] in
+            var failures = 0
             while !Task.isCancelled {
-                guard let self else { return }
+                guard let self, self.syncGeneration == generation else { return }
                 await self.refreshInfo()
+                guard !Task.isCancelled, self.syncGeneration == generation else { return }
+                let client = self.daemon   // after a failover this is the new node
                 var caughtUp = false
+                var failed = false
                 do {
                     self.isSyncing = true
                     var rounds = 0
@@ -287,8 +309,10 @@ final class AppModel: ObservableObject {
                         var working = self.state
                         caughtUp = try await synchronizer.syncOnce(daemon: client, state: &working)
                         rounds += 1
-                        if Task.isCancelled { return }
+                        guard !Task.isCancelled, self.syncGeneration == generation else { return }
                         self.merge(working)
+                        failures = 0
+                        self.syncError = nil
                         if caughtUp { break }
                         if rounds % 5 == 0 { try? self.persist() }
                     }
@@ -300,15 +324,19 @@ final class AppModel: ObservableObject {
                     }
                     try? self.persist()
                     if caughtUp { PaymentNotifier.markSeen(height: self.state.lastKnownBlockHeight) }
-                    self.syncError = nil
-                } catch is CancellationError {
-                    return
                 } catch {
-                    self.syncError = error.localizedDescription
+                    // A cancelled request is a restart/lock, not a failure: never show it.
+                    if Task.isCancelled || isCancellation(error) || self.syncGeneration != generation { return }
+                    failures += 1
+                    failed = true
+                    // Retry transient errors quietly; only report a problem that persists.
+                    if failures >= 3 { self.syncError = error.localizedDescription }
                 }
                 self.isSyncing = false
-                if caughtUp || self.syncError != nil {
+                if caughtUp {
                     try? await Task.sleep(nanoseconds: 15_000_000_000)
+                } else if failed {
+                    try? await Task.sleep(nanoseconds: UInt64(min(failures, 6)) * 2_500_000_000)
                 }
             }
         }

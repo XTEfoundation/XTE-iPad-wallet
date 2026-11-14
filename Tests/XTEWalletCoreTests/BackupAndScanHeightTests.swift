@@ -2,6 +2,9 @@
 
 import Foundation
 import XCTest
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 @testable import XTEWalletCore
 
 final class WalletBackupTests: XCTestCase {
@@ -130,5 +133,15 @@ final class HardwareWalletTests: XCTestCase {
         XCTAssertTrue(SwapCatalog.providers.isEmpty)
         XCTAssertFalse(SwapCatalog.candidates.isEmpty)
         XCTAssertFalse(HardwareWalletProvider.all().first { $0.id == "ledger" }!.available)
+    }
+}
+
+final class CancellationTests: XCTestCase {
+    func testURLSessionCancellationIsNotAnError() {
+        XCTAssertTrue(isCancellation(CancellationError()))
+        XCTAssertTrue(isCancellation(URLError(.cancelled)))
+        XCTAssertTrue(isCancellation(NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)))
+        XCTAssertFalse(isCancellation(URLError(.timedOut)))
+        XCTAssertFalse(isCancellation(DaemonError.http(500)))
     }
 }

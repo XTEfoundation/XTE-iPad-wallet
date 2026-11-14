@@ -243,6 +243,9 @@ public final class DaemonClient: DaemonAPI, @unchecked Sendable {
         do {
             (data, response) = try await session.data(for: req)
         } catch {
+            // URLSession reports a cancelled task as URLError.cancelled ("cancelled"). Keep it a
+            // cancellation so callers can tell a restart/lock apart from a network failure.
+            if Task.isCancelled || isCancellation(error) { throw CancellationError() }
             throw DaemonError.transport(error.localizedDescription)
         }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
