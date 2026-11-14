@@ -61,13 +61,22 @@ struct SyncStatusView: View {
                 }
             }
             .font(.footnote.monospacedDigit())
-            if let e = model.syncError ?? model.nodeError {
-                Text(e).font(.footnote).foregroundStyle(.red)
-            } else if model.isWalletSynced {
-                Label("Synced", systemImage: "checkmark.circle").font(.footnote).foregroundStyle(.green)
-            } else if model.isSyncing {
-                Label("Syncing…", systemImage: "arrow.triangle.2.circlepath").font(.footnote)
+            HStack {
+                if let e = model.syncError ?? model.nodeError {
+                    Label(e, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
+                } else if model.isWalletSynced {
+                    Label("Synced", systemImage: "checkmark.circle").foregroundStyle(.green)
+                } else {
+                    Label("Syncing… \(model.syncPercentText)", systemImage: "arrow.triangle.2.circlepath")
+                }
+                Spacer()
+                if let at = model.lastSyncedAt {
+                    Text("Last synced \(at.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
+                }
             }
+            .font(.footnote.monospacedDigit())
+            Text(model.fastPathActive ? "RPC gateway" : "Node REST API")
+                .font(.caption2).foregroundStyle(.secondary)
         }
     }
 }

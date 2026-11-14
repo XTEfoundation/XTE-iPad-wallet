@@ -17,6 +17,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var isSyncing = false
     /// The node's fast RPC gateway is in use for sync (otherwise the REST API).
     @Published private(set) var fastPathActive = false
+    /// When the wallet last caught up with the network (shown as "Synced · 18:04").
+    @Published private(set) var lastSyncedAt: Date?
     @Published var node: NodeInfo {
         didSet {
             Settings.selectedNode = node
@@ -67,6 +69,12 @@ final class AppModel: ObservableObject {
     var syncProgress: Double {
         guard let top = daemonInfo?.networkTopHeight, top > 0 else { return 0 }
         return min(1, Double(state.lastKnownBlockHeight) / Double(top))
+    }
+
+    /// Sync progress in percent, two decimals, never 100 before the wallet is caught up.
+    var syncPercentText: String {
+        let p = isWalletSynced ? 100 : min(99.99, syncProgress * 100)
+        return String(format: "%.2f%%", p)
     }
 
     var isWalletSynced: Bool {
@@ -360,7 +368,10 @@ final class AppModel: ObservableObject {
                         self.publishPlatformState()
                         failures = 0
                         self.syncError = nil
-                        if !self.fastPathActive, await GatewayRegistry.shared.isActive(for: self.node) { self.fastPathActive = true }
+                        // Reflect a gateway -> REST fallback (and the way back) right away.
+                        let gatewayActive = await GatewayRegistry.shared.isActive(for: self.node)
+                        if self.fastPathActive != gatewayActive { self.fastPathActive = gatewayActive }
+                        if caughtUp || self.isWalletSynced { self.lastSyncedAt = Date() }
                         if caughtUp { break }
                         if rounds % 5 == 0 { try? self.persist() }
                     }
