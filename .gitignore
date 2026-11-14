@@ -17,3 +17,5 @@ App/XTEWallet/Info.plist
 *.p8
 .env
 Package.resolved
+Widgets/Info.plist
+*.entitlements

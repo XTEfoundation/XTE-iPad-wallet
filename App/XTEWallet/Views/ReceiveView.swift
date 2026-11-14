@@ -49,9 +49,18 @@ struct ReceiveView: View {
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                 if !amountText.isEmpty || !paymentID.isEmpty {
                     Text(uri).font(.caption.monospaced()).textSelection(.enabled)
+                    ShareLink(item: URL(string: uri) ?? URL(string: "about:blank")!,
+                              subject: Text("\(XTEConfig.ticker) payment request"),
+                              message: Text("Please pay \(Amount.parse(amountText).map { Amount.format($0) } ?? XTEConfig.ticker)")) {
+                        Label("Share payment request", systemImage: "square.and.arrow.up")
+                    }
                 }
             }
         }
         .navigationTitle("Receive")
+        // Handoff: show the same address / request on another device.
+        .userActivity(SharedConfig.receiveActivityType, isActive: !model.address.isEmpty) { activity in
+            Handoff.receive(activity, uri: uri)
+        }
     }
 }

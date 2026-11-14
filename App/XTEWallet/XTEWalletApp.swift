@@ -7,12 +7,16 @@ import XTEWalletCore
 struct XTEWalletApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var prefs = SecurityPrefs.shared
+    @StateObject private var router = AppRouter.shared
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
         // BGProcessingTask handler for long background catch-up (BGAppRefreshTask is the
         // .backgroundTask modifier below). Registration must happen before launch completes.
         BackgroundSync.register()
+        // Payment notification actions ("Show transactions", "Show receive QR").
+        NotificationRouter.shared.install()
+        WatchBridge.shared.activate()
     }
 
     var body: some Scene {
@@ -20,15 +24,17 @@ struct XTEWalletApp: App {
             RootView()
                 .environmentObject(model)
                 .environmentObject(prefs)
+                .environmentObject(router)
                 .overlay {
                     // Hides balances and keys in the app switcher snapshot.
                     if prefs.screenProtection && scenePhase != .active { PrivacyCover() }
                 }
                 .onOpenURL { url in
-                    if let uri = try? PaymentURI.parse(url.absoluteString) {
-                        model.pendingURI = uri
-                    }
+                    // Payment URIs (xte:// / xtcash://) and internal links from widgets and Siri.
+                    _ = router.handle(url: url)
                 }
+                .onContinueUserActivity(SharedConfig.receiveActivityType) { Handoff.continueActivity($0) }
+                .onContinueUserActivity(SharedConfig.sendActivityType) { Handoff.continueActivity($0) }
         }
         .onChange(of: scenePhase) { phase in
             // Drop keys from memory when the app leaves the foreground (or after the
@@ -46,7 +52,7 @@ struct XTEWalletApp: App {
 }
 
 enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
-    case wallet, send, receive, transactions, node, settings
+    case wallet, send, receive, transactions, addressBook, node, settings
     var id: String { rawValue }
 
     var title: String {
@@ -55,6 +61,7 @@ enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
         case .send: return "Send"
         case .receive: return "Receive"
         case .transactions: return "Transactions"
+        case .addressBook: return "Address book"
         case .node: return "Node"
         case .settings: return "Settings"
         }
@@ -66,6 +73,7 @@ enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
         case .send: return "arrow.up.circle"
         case .receive: return "qrcode"
         case .transactions: return "list.bullet.rectangle"
+        case .addressBook: return "person.crop.rectangle.stack"
         case .node: return "server.rack"
         case .settings: return "gearshape"
         }
@@ -109,6 +117,7 @@ struct PrivacyCover: View {
 
 struct MainSplitView: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var router: AppRouter
     @State private var selection: SidebarItem? = .wallet
 
     var body: some View {
@@ -124,6 +133,7 @@ struct MainSplitView: View {
                 case .send: SendView()
                 case .receive: ReceiveView()
                 case .transactions: TransactionsView()
+                case .addressBook: AddressBookView()
                 case .node: NodeView()
                 case .settings: SettingsView()
                 }
@@ -132,9 +142,32 @@ struct MainSplitView: View {
         .onChange(of: model.pendingURI) { uri in
             if uri != nil { selection = .send }
         }
+        .onAppear { if let r = router.pending { route(r) } }
+        .onChange(of: router.pending) { r in if let r { route(r) } }
         .sheet(isPresented: $model.offerSecuritySetup) {
             NavigationStack { SecurityView(setup: true) }
                 .interactiveDismissDisabled()
+        }
+    }
+}
+
+extension MainSplitView {
+    func route(_ r: AppRoute) {
+        router.pending = nil
+        switch r {
+        case .wallet: selection = .wallet
+        case .receive: selection = .receive
+        case .transactions: selection = .transactions
+        case .addressBook: selection = .addressBook
+        case let .send(amount, address):
+            if let address, let uri = try? PaymentURI.parse(address) {
+                var u = uri
+                if u.amount == nil, let amount, let a = Amount.parse(amount) { u.amount = a }
+                model.pendingURI = u
+            } else {
+                model.sendDraft = SendDraft(address: address, amount: amount)
+            }
+            selection = .send
         }
     }
 }

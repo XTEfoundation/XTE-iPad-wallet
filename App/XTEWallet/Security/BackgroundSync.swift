@@ -187,8 +187,13 @@ enum BackgroundSync {
     }
 
     private static func announce(_ amount: UInt64) async {
-        guard amount > 0, SecurityPrefs.shared.notifications else { return }
+        guard amount > 0 else { return }
+        // Widgets show the payment until the next foreground sync counts it.
+        WidgetPublisher.notePendingIncoming("+" + Amount.format(amount))
+        guard SecurityPrefs.shared.notifications else { return }
         let content = UNMutableNotificationContent()
+        content.categoryIdentifier = NotificationRouter.paymentCategory
+        content.threadIdentifier = "payments"
         content.title = "\(XTEConfig.ticker) received"
         content.body = "\(Amount.format(amount)) arrived in your wallet."
         content.sound = .default

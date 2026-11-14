@@ -14,6 +14,7 @@ struct SendView: View {
     @State private var error: String?
     @State private var prepared: PreparedTransaction?
     @State private var sentHash: String?
+    @State private var showAddressBook = false
 
     private var limits: (minimum: UInt64, maximum: UInt64, defaultMixin: UInt64) {
         XTEConfig.mixinLimits(height: model.networkHeight)
@@ -39,9 +40,15 @@ struct SendView: View {
                 if !addressText.isEmpty && parsedAddress == nil {
                     Text("Not a valid XTE address").foregroundStyle(.red).font(.footnote)
                 }
-                Button { if let s = UIPasteboard.general.string { addressText = s } } label: {
-                    Label("Paste", systemImage: "doc.on.clipboard")
+                HStack {
+                    Button { if let s = UIPasteboard.general.string { addressText = s } } label: {
+                        Label("Paste", systemImage: "doc.on.clipboard")
+                    }
+                    Spacer()
+                    // Opening the address book asks for Face ID / passcode.
+                    Button { showAddressBook = true } label: { Label("Address book", systemImage: "person.crop.rectangle.stack") }
                 }
+                .buttonStyle(.borderless)
             }
             Section("Amount") {
                 TextField("Amount in XTE", text: $amountText).keyboardType(.decimalPad)
@@ -85,7 +92,27 @@ struct SendView: View {
             }
         }
         .navigationTitle("Send")
-        .onAppear { if let uri = model.pendingURI { apply(uri) } }
+        .onAppear {
+            if let uri = model.pendingURI { apply(uri) }
+            if let d = model.sendDraft { apply(d) }
+        }
+        .onChange(of: model.sendDraft) { d in if let d { apply(d) } }
+        .sheet(isPresented: $showAddressBook) {
+            NavigationStack {
+                AddressBookView { entry in
+                    addressText = entry.address
+                    if let p = entry.paymentID { paymentID = p }
+                    showAddressBook = false
+                }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { showAddressBook = false } } }
+            }
+        }
+        // Handoff: continue this payment on another device.
+        .userActivity(SharedConfig.sendActivityType, isActive: parsedAddress != nil) { activity in
+            Handoff.send(activity, uri: PaymentURI(address: addressText.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                   amount: Amount.parse(amountText),
+                                                   paymentID: isHex64(paymentID) ? paymentID.lowercased() : nil).uriString())
+        }
         .onChange(of: model.pendingURI) { uri in if let uri { apply(uri) } }
         .sheet(item: Binding(get: { prepared.map { PreparedBox(tx: $0) } }, set: { prepared = $0?.tx })) { box in
             ConfirmSendView(tx: box.tx, destination: addressText) { confirmed in
@@ -106,6 +133,14 @@ struct SendView: View {
         if let a = uri.amount { amountText = Amount.format(a, withTicker: false).replacingOccurrences(of: ",", with: "") }
         if let p = uri.paymentID { paymentID = p }
         model.pendingURI = nil
+    }
+
+    private func apply(_ draft: SendDraft) {
+        if let a = draft.address, !a.isEmpty {
+            addressText = a   // a payment URI is expanded by applyURIIfNeeded
+        }
+        if let amount = draft.amount, !amount.isEmpty { amountText = amount }
+        model.sendDraft = nil
     }
 
     private func review() {
@@ -133,7 +168,7 @@ struct SendView: View {
         defer { working = false }
         do {
             try await KeychainStore.authenticate(reason: "Confirm sending \(Amount.format(tx.amount))")
-            try await model.broadcast(tx)
+            try await model.broadcast(tx, destination: addressText)
             sentHash = tx.hash.hex
             amountText = ""
             paymentID = ""

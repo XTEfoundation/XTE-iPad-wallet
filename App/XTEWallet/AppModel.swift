@@ -29,6 +29,8 @@ final class AppModel: ObservableObject {
     private var syncGeneration = 0
     @Published var nodes: [NodeInfo] = [XTEConfig.defaultNode]
     @Published var pendingURI: PaymentURI?
+    /// Pre-filled Send screen from Siri, widgets, Handoff or a notification.
+    @Published var sendDraft: SendDraft?
     @Published var lastError: String?
     /// Set after create/restore so the UI can offer Security & Backup once.
     @Published var offerSecuritySetup = false
@@ -132,6 +134,8 @@ final class AppModel: ObservableObject {
     }
 
     func lock() {
+        LiveActivities.endSync()
+        AddressBook.shared.lock()
         syncTask?.cancel()
         syncTask = nil
         keys = nil
@@ -251,6 +255,7 @@ final class AppModel: ObservableObject {
         BackgroundSync.cache.clear()
         prefs.resetForNewWallet()
         WalletStore.delete()
+        WidgetPublisher.clear()
         state = WalletState()
         address = ""
         phase = .onboarding
@@ -348,6 +353,7 @@ final class AppModel: ObservableObject {
                         rounds += 1
                         guard !Task.isCancelled, self.syncGeneration == generation else { return }
                         self.merge(working)
+                        self.publishPlatformState()
                         failures = 0
                         self.syncError = nil
                         if !self.fastPathActive, await GatewayRegistry.shared.isActive(for: self.node) { self.fastPathActive = true }
@@ -360,6 +366,7 @@ final class AppModel: ObservableObject {
                         s.applyStatus(status)
                         self.state = s
                     }
+                    self.publishPlatformState()
                     try? self.persist()
                     if caughtUp { PaymentNotifier.markSeen(height: self.state.lastKnownBlockHeight) }
                 } catch {
@@ -424,9 +431,30 @@ final class AppModel: ObservableObject {
             decoys: DaemonDecoySource(daemon: client))
     }
 
-    func broadcast(_ tx: PreparedTransaction) async throws {
+    func broadcast(_ tx: PreparedTransaction, destination: String = "") async throws {
         try await daemon.sendRawTransaction(hex: tx.hex)
         state.recordSent(tx)
         try? persist()
+        LiveActivities.startSend(hash: tx.hash.hex, amountText: Amount.format(tx.amount), destination: destination,
+                                 networkHeight: networkHeight)
+        publishPlatformState()
     }
+
+    // MARK: Widgets, Live Activities, watch
+
+    /// Public data only (address, balance, last payment); never keys.
+    func publishPlatformState() {
+        guard phase == .unlocked, !address.isEmpty else { return }
+        WidgetPublisher.publish(address: address, state: state, networkHeight: networkHeight)
+        if let top = daemonInfo?.networkTopHeight {
+            LiveActivities.updateSync(walletHeight: state.lastKnownBlockHeight, networkHeight: top)
+            LiveActivities.updateSends(state.transactions, networkHeight: top)
+        }
+    }
+}
+
+/// Values for the Send screen (address may be a payment URI).
+struct SendDraft: Equatable {
+    var address: String?
+    var amount: String?
 }
