@@ -50,6 +50,7 @@ struct NodeView: View {
                 TextField("Host", text: $customHost).textInputAutocapitalization(.never).autocorrectionDisabled()
                 TextField("Port", text: $customPort).keyboardType(.numberPad)
                 Toggle("HTTPS", isOn: $customSSL)
+                    .feedback(on: customSSL)
                 Button("Use custom node") {
                     guard let port = Int(customPort), !customHost.isEmpty else { return }
                     model.node = NodeInfo(name: customHost, host: customHost, port: port, ssl: customSSL)

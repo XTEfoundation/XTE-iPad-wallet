@@ -38,7 +38,7 @@ struct ReceiveView: View {
                 }
                 Text(model.address).font(.body.monospaced()).textSelection(.enabled)
                 HStack {
-                    Button { UIPasteboard.general.string = model.address } label: { Label("Copy address", systemImage: "doc.on.doc") }
+                    Button { UIPasteboard.general.string = model.address; Haptics.play(.success) } label: { Label("Copy address", systemImage: "doc.on.doc") }
                     Spacer()
                     ShareLink(item: model.address) { Label("Share", systemImage: "square.and.arrow.up") }
                 }

@@ -44,6 +44,7 @@ struct OnboardingView: View {
                     Picker("Mode", selection: $mode) {
                         ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
                     }
+                    .feedback(on: mode)
                     .pickerStyle(.segmented)
                 }
                 switch mode {
@@ -58,6 +59,7 @@ struct OnboardingView: View {
                         Picker("Start scanning from", selection: $scanFrom) {
                             ForEach(ScanFrom.allCases) { Text($0.rawValue).tag($0) }
                         }
+                        .feedback(on: scanFrom)
                         .pickerStyle(.segmented)
                         if scanFrom == .date {
                             DatePicker("Wallet created around", selection: $createdDate, in: ...Date(), displayedComponents: .date)
@@ -98,6 +100,7 @@ struct OnboardingView: View {
             .privacySensitive()
             Text(generated.address.encoded()).font(.caption.monospaced()).textSelection(.enabled)
             Toggle("I wrote down these 25 words. Anyone with them can spend my XTE.", isOn: $confirmedBackup)
+                .feedback(on: confirmedBackup)
             Button("Generate another") { generated = WalletKeys.generate(); confirmedBackup = false }
         } header: {
             Text("Your mnemonic seed")

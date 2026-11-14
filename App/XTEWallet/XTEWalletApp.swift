@@ -125,6 +125,7 @@ struct MainSplitView: View {
             List(SidebarItem.allCases, selection: $selection) { item in
                 NavigationLink(value: item) { Label(item.title, systemImage: item.icon) }
             }
+            .feedback(on: selection)
             .navigationTitle("XTE")
         } detail: {
             NavigationStack {

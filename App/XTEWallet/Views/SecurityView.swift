@@ -32,6 +32,7 @@ struct SecurityView: View {
                 LabeledContent("Keys stored in", value: "Keychain, this iPad only")
                 LabeledContent("Unlock", value: "Face ID / Touch ID / passcode")
                 Toggle("Secure Enclave protection", isOn: Binding(get: { prefs.hardwareVault }, set: { setVault($0) }))
+                    .feedback(on: prefs.hardwareVault)
                 if prefs.hardwareVault, let level = SecureEnclaveVault.level {
                     LabeledContent("Hardware key", value: level)
                 }
@@ -45,12 +46,15 @@ struct SecurityView: View {
                 Picker("Auto-lock", selection: $prefs.autoLockSeconds) {
                     ForEach(SecurityPrefs.autoLockChoices, id: \.seconds) { Text($0.title).tag($0.seconds) }
                 }
+                .feedback(on: prefs.autoLockSeconds)
                 Toggle("Hide wallet in the app switcher", isOn: $prefs.screenProtection)
+                    .feedback(on: prefs.screenProtection)
                 LabeledContent("Confirm sends", value: "Face ID / passcode (always on)")
             }
 
             Section {
                 Toggle("Notify me about incoming payments", isOn: Binding(get: { prefs.notifications }, set: { setNotifications($0) }))
+                    .feedback(on: prefs.notifications)
                     .disabled(model.phase != .unlocked)
             } header: {
                 Text("Notifications")
@@ -60,8 +64,10 @@ struct SecurityView: View {
 
             Section {
                 Toggle("Sync in the background", isOn: Binding(get: { prefs.backgroundSync }, set: { setBackgroundSync($0) }))
+                    .feedback(on: prefs.backgroundSync)
                     .disabled(model.phase != .unlocked)
                 Toggle("Long catch-up only while charging", isOn: $prefs.backgroundSyncChargingOnly)
+                    .feedback(on: prefs.backgroundSyncChargingOnly)
                     .disabled(!prefs.backgroundSync)
             } header: {
                 Text("Background sync")

@@ -76,6 +76,7 @@ struct SendView: View {
             if let sentHash {
                 Section("Sent") {
                     Label("Transaction broadcast", systemImage: "checkmark.seal").foregroundStyle(.green)
+                        .confirmBounce(sentHash)
                     Text(sentHash).font(.caption.monospaced()).textSelection(.enabled)
                 }
             }
@@ -159,6 +160,7 @@ struct SendView: View {
                                                          fee: fee, mixin: effectiveMixin))
             } catch {
                 self.error = error.localizedDescription
+                Haptics.play(.warning)
             }
         }
     }
@@ -170,10 +172,12 @@ struct SendView: View {
             try await KeychainStore.authenticate(reason: "Confirm sending \(Amount.format(tx.amount))")
             try await model.broadcast(tx, destination: addressText)
             sentHash = tx.hash.hex
+            Haptics.play(.success)
             amountText = ""
             paymentID = ""
         } catch {
             self.error = error.localizedDescription
+            if !(error is CancellationError) { Haptics.play(.warning) }
         }
     }
 }

@@ -75,6 +75,7 @@ struct SyncStatusView: View {
                 }
             }
             .font(.footnote.monospacedDigit())
+            .confirmBounce(model.isWalletSynced)
             Text(model.fastPathActive ? "RPC gateway" : "Node REST API")
                 .font(.caption2).foregroundStyle(.secondary)
         }
