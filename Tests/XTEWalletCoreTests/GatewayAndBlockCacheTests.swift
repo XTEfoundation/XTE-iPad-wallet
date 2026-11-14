@@ -173,4 +173,23 @@ final class BlockCacheTests: XCTestCase {
         let r = try await d.walletSyncData(checkpoints: [h(99)], startHeight: 0, startTimestamp: 0, blockCount: 10, skipCoinbase: true)
         XCTAssertEqual(r.items.first?.blockHeight, 100)
     }
+
+    func testGatewayStaysActiveAfterOneFailureAndTimestampGoesToREST() async {
+        let reg = GatewayRegistry()
+        let node = XTEConfig.defaultNode
+        await reg.markSucceeded(node, url: Gateway.endpoint(for: node))
+        await reg.markFailed(node)
+        var active = await reg.isActive(for: node)
+        XCTAssertTrue(active, "one slow/failed call must not disable the gateway")
+        await reg.markFailed(node)
+        active = await reg.isActive(for: node)
+        XCTAssertFalse(active)
+        XCTAssertTrue(Gateway.isTimestampOnly(checkpoints: [], startHeight: 0, startTimestamp: 1_700_000_000))
+        XCTAssertFalse(Gateway.isTimestampOnly(checkpoints: [], startHeight: 5, startTimestamp: 1_700_000_000))
+        let body = Gateway.syncRequestBody(checkpoints: [], startHeight: 5, startTimestamp: 1_700_000_000, blockCount: 1000, skipCoinbase: false)
+        let json = try! JSONSerialization.jsonObject(with: body) as! [String: Any]
+        let p = (json["params"] as! [[String: Any]])[0]
+        XCTAssertNil(p["startTimestamp"])
+        XCTAssertGreaterThanOrEqual(Gateway.syncTimeout, 90)
+    }
 }

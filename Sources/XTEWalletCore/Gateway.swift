@@ -54,10 +54,19 @@ public enum Gateway {
         var p: [String: Any] = ["blockCount": blockCount, "skipCoinbase": skipCoinbase]
         if !checkpoints.isEmpty { p["checkpoints"] = checkpoints.map(\.hex) }
         p["startHeight"] = startHeight
-        if startTimestamp > 0 { p["startTimestamp"] = startTimestamp }
+        // startTimestamp is never sent: the gateway cannot resolve it (the call hangs ~30 s and ends
+        // with -32000 "daemon read failed"). Timestamp-only requests go to REST, see isTimestampOnly.
         let body: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": XTEConfig.gatewayNamespace + "_syncBlocks", "params": [p]]
         return try! JSONSerialization.data(withJSONObject: body)
     }
+
+    /// A fresh wallet that only knows its creation time (no block scanned yet).
+    public static func isTimestampOnly(checkpoints: [Hash32], startHeight: UInt64, startTimestamp: UInt64) -> Bool {
+        startTimestamp > 0 && startHeight == 0 && checkpoints.isEmpty
+    }
+
+    /// Cold 1000-block ranges with coinbase take 10-15 s on the server, more on mobile data.
+    public static let syncTimeout: TimeInterval = 90
 
     struct RPCErrorBody: Decodable { let code: Int; let message: String }
     struct SyncResult: Decodable {
@@ -90,8 +99,12 @@ public actor GatewayRegistry {
     }
     private var entries: [String: Entry] = [:]
     private var inFlight: [String: Task<URL?, Never>] = [:]
+    private var failures: [String: Int] = [:]
     public var recheckAvailable: TimeInterval = 30 * 60
-    public var retryUnavailable: TimeInterval = 10 * 60
+    /// Short: one slow answer on a mobile link must not keep the wallet on the slow REST path.
+    public var retryUnavailable: TimeInterval = 2 * 60
+    /// Consecutive transport failures before the gateway is skipped for retryUnavailable.
+    public var failuresBeforeDisable = 2
 
     public init() {}
 
@@ -115,9 +128,24 @@ public actor GatewayRegistry {
         return result
     }
 
-    /// Called after a failed gateway call: use REST for a while.
+    /// Called after a transport/HTTP failure of a gateway call. That call falls back to REST;
+    /// only repeated failures make the wallet skip the gateway, and only for retryUnavailable.
+    /// (A JSON-RPC error means the gateway is up: callers fall back for that call only.)
     public func markFailed(_ node: NodeInfo) {
-        entries[key(node)] = .unavailable(Date().addingTimeInterval(retryUnavailable))
+        let k = key(node)
+        let n = (failures[k] ?? 0) + 1
+        if n >= failuresBeforeDisable {
+            entries[k] = .unavailable(Date().addingTimeInterval(retryUnavailable))
+            failures[k] = 0
+        } else {
+            failures[k] = n
+        }
+    }
+
+    public func markSucceeded(_ node: NodeInfo, url: URL) {
+        let k = key(node)
+        failures[k] = 0
+        entries[k] = .available(url, Date())
     }
 
     public func isActive(for node: NodeInfo) -> Bool {
@@ -125,7 +153,7 @@ public actor GatewayRegistry {
         return false
     }
 
-    public func reset() { entries = [:] }
+    public func reset() { entries = [:]; failures = [:] }
 
     static func probe(_ url: URL, session: URLSession) async -> Bool {
         var req = URLRequest(url: url.appendingPathComponent("health"))

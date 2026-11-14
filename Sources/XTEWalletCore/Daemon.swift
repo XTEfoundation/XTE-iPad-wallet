@@ -295,24 +295,29 @@ public final class DaemonClient: DaemonAPI, @unchecked Sendable {
     /// Uses the node's xte-rpc-gateway (1000 cached blocks per call) when it has one,
     /// otherwise - and after any gateway failure - the daemon's /getwalletsyncdata.
     public func walletSyncData(checkpoints: [Hash32], startHeight: UInt64, startTimestamp: UInt64, blockCount: UInt64, skipCoinbase: Bool) async throws -> WalletSyncResponse {
-        if useGateway, let url = await GatewayRegistry.shared.endpoint(for: node, session: session) {
+        if useGateway, !Gateway.isTimestampOnly(checkpoints: checkpoints, startHeight: startHeight, startTimestamp: startTimestamp),
+           let url = await GatewayRegistry.shared.endpoint(for: node, session: session) {
             do {
                 let count = blockCount == XTEConfig.blocksPerSyncRequest ? XTEConfig.gatewayBlocksPerRequest : blockCount
                 var req = URLRequest(url: url)
                 req.httpMethod = "POST"
-                req.timeoutInterval = max(timeout, 30)
+                req.timeoutInterval = max(timeout, Gateway.syncTimeout)
                 req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 req.setValue("application/json", forHTTPHeaderField: "Accept")
-                req.httpBody = Gateway.syncRequestBody(checkpoints: checkpoints, startHeight: startHeight, startTimestamp: startTimestamp,
+                req.httpBody = Gateway.syncRequestBody(checkpoints: checkpoints, startHeight: startHeight, startTimestamp: 0,
                                                        blockCount: count, skipCoinbase: skipCoinbase)
                 let (data, response) = try await session.data(for: req)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     throw DaemonError.http(http.statusCode)
                 }
-                return try Gateway.decodeSync(data)
+                let r = try Gateway.decodeSync(data)
+                await GatewayRegistry.shared.markSucceeded(node, url: url)
+                return r
+            } catch GatewayError.rpc {
+                // The gateway answered: it is up, only this request failed. REST for this call.
             } catch {
                 if Task.isCancelled || isCancellation(error) { throw CancellationError() }
-                // Fall through to REST and avoid the gateway for a while.
+                // Transport/HTTP/decoding problem: REST for this call; repeated ones pause the gateway briefly.
                 await GatewayRegistry.shared.markFailed(node)
             }
         }

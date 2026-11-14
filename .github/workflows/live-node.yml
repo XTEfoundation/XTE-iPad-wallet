@@ -38,3 +38,7 @@ jobs:
         env:
           REQUIRE_EXPLICIT_NODE: ${{ inputs.strict && '1' || '0' }}
         run: swift run -c release xte-node-check "${{ inputs.host }}" "${{ inputs.port || '443' }}" "${{ inputs.scheme || 'ssl' }}"
+      - name: Live gateway sync (xte-rpc-gateway, 1000 blocks per call, no REST fallback)
+        env:
+          LIVE_GATEWAY: "1"
+        run: swift test --filter LiveGatewayTests
