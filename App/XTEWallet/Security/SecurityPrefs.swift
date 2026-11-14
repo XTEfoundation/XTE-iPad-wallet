@@ -17,6 +17,10 @@ final class SecurityPrefs: ObservableObject {
     @Published var screenProtection: Bool { didSet { defaults.set(screenProtection, forKey: "sec.screenProtection") } }
     /// Local "payment received" notifications from background refresh.
     @Published var notifications: Bool { didSet { defaults.set(notifications, forKey: "sec.notifications") } }
+    /// Download and scan new blocks in the background with the view-only key (BackgroundSync).
+    @Published var backgroundSync: Bool { didSet { defaults.set(backgroundSync, forKey: "sec.backgroundSync") } }
+    /// Long background catch-up (BGProcessingTask) only while the iPad is charging.
+    @Published var backgroundSyncChargingOnly: Bool { didSet { defaults.set(backgroundSyncChargingOnly, forKey: "sec.backgroundSyncCharging") } }
     @Published var setupOffered: Bool { didSet { defaults.set(setupOffered, forKey: "sec.setupOffered") } }
     @Published var compromisedAcknowledged: Bool { didSet { defaults.set(compromisedAcknowledged, forKey: "sec.compromisedAck") } }
     @Published var lastCloudBackup: Date? { didSet { defaults.set(lastCloudBackup, forKey: "sec.lastCloudBackup") } }
@@ -39,6 +43,10 @@ final class SecurityPrefs: ObservableObject {
         autoLockSeconds = defaults.integer(forKey: "sec.autoLockSeconds")
         screenProtection = defaults.object(forKey: "sec.screenProtection") as? Bool ?? true
         notifications = defaults.bool(forKey: "sec.notifications")
+        // Off unless chosen; on by default only when payment notifications already store the
+        // view-only key (then background sync adds no new exposure).
+        backgroundSync = defaults.object(forKey: "sec.backgroundSync") as? Bool ?? defaults.bool(forKey: "sec.notifications")
+        backgroundSyncChargingOnly = defaults.object(forKey: "sec.backgroundSyncCharging") as? Bool ?? true
         setupOffered = defaults.bool(forKey: "sec.setupOffered")
         compromisedAcknowledged = defaults.bool(forKey: "sec.compromisedAck")
         lastCloudBackup = defaults.object(forKey: "sec.lastCloudBackup") as? Date
@@ -51,5 +59,6 @@ final class SecurityPrefs: ObservableObject {
         lastCloudBackup = nil
         lastFileBackup = nil
         notifications = false
+        backgroundSync = false
     }
 }

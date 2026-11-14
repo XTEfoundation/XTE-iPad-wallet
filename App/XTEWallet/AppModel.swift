@@ -15,6 +15,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var nodeError: String?
     @Published private(set) var syncError: String?
     @Published private(set) var isSyncing = false
+    /// The node's fast RPC gateway is in use for sync (otherwise the REST API).
+    @Published private(set) var fastPathActive = false
     @Published var node: NodeInfo {
         didSet {
             Settings.selectedNode = node
@@ -143,7 +145,7 @@ final class AppModel: ObservableObject {
         backgroundedAt = Date()
         try? persist()
         if prefs.autoLockSeconds == 0 { lock() }
-        PaymentNotifier.schedule()
+        BackgroundSync.scheduleAll()
     }
 
     func didBecomeActive() {
@@ -172,6 +174,32 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Opt-in background sync. Stores the view-only key (cannot spend) like notifications.
+    func setBackgroundSync(_ on: Bool) throws {
+        if on {
+            if KeychainStore.loadNotificationKeys() == nil {
+                let view = keys.map(ViewOnlyKeys.init(keys:)) ?? viewKeys
+                guard let view else { throw TransferError.viewOnlyWallet }
+                try KeychainStore.saveNotificationKeys(view)
+            }
+            if PaymentNotifier.nextHeight == 0 { PaymentNotifier.markSeen(height: state.lastKnownBlockHeight) }
+            prefs.backgroundSync = true
+            updateSyncAnchor()
+            BackgroundSync.scheduleAll()
+        } else {
+            prefs.backgroundSync = false
+            BackgroundSync.cache.clear()
+            BackgroundSync.cancelAll()
+            if !prefs.notifications { KeychainStore.deleteNotificationKeys() }
+        }
+    }
+
+    /// Tells background sync where the wallet stands (it cannot read the protected wallet file).
+    private func updateSyncAnchor() {
+        guard prefs.backgroundSync else { return }
+        BackgroundSync.cache.setAnchor(BlockCacheAnchor(height: state.lastKnownBlockHeight, hash: state.lastKnownBlockHashes.first))
+    }
+
     func setNotifications(_ on: Bool) async throws {
         if on {
             guard await PaymentNotifier.requestPermission() else {
@@ -186,8 +214,10 @@ final class AppModel: ObservableObject {
             PaymentNotifier.schedule()
         } else {
             prefs.notifications = false
-            KeychainStore.deleteNotificationKeys()
-            PaymentNotifier.cancel()
+            if !prefs.backgroundSync {
+                KeychainStore.deleteNotificationKeys()
+                PaymentNotifier.cancel()
+            }
         }
     }
 
@@ -217,6 +247,8 @@ final class AppModel: ObservableObject {
         try KeychainStore.delete()
         KeychainStore.deleteNotificationKeys()
         PaymentNotifier.cancel()
+        BackgroundSync.cancelAll()
+        BackgroundSync.cache.clear()
         prefs.resetForNewWallet()
         WalletStore.delete()
         state = WalletState()
@@ -233,6 +265,7 @@ final class AppModel: ObservableObject {
     }
 
     func rescan(from height: UInt64) {
+        BackgroundSync.cache.clear()
         state = WalletState(startHeight: height)
         try? persist()
         restartSync()
@@ -240,6 +273,7 @@ final class AppModel: ObservableObject {
 
     private func persist() throws {
         try WalletStore.save(WalletFile(address: address, state: state, viewOnly: isViewOnly ? true : nil))
+        updateSyncAnchor()
     }
 
     // MARK: Node
@@ -258,6 +292,7 @@ final class AppModel: ObservableObject {
         do {
             daemonInfo = try await daemon.info()
             nodeError = nil
+            fastPathActive = await GatewayRegistry.shared.isActive(for: node)
         } catch {
             daemonInfo = nil
             nodeError = error.localizedDescription
@@ -299,7 +334,9 @@ final class AppModel: ObservableObject {
                 guard let self, self.syncGeneration == generation else { return }
                 await self.refreshInfo()
                 guard !Task.isCancelled, self.syncGeneration == generation else { return }
-                let client = self.daemon   // after a failover this is the new node
+                // After a failover this is the new node. Blocks prefetched by background sync
+                // are read from disk first; the node (fast gateway or REST) supplies the rest.
+                let client = PrefetchedDaemon(base: self.daemon, cache: BackgroundSync.cache)
                 var caughtUp = false
                 var failed = false
                 do {
@@ -313,6 +350,7 @@ final class AppModel: ObservableObject {
                         self.merge(working)
                         failures = 0
                         self.syncError = nil
+                        if !self.fastPathActive, await GatewayRegistry.shared.isActive(for: self.node) { self.fastPathActive = true }
                         if caughtUp { break }
                         if rounds % 5 == 0 { try? self.persist() }
                     }

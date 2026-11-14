@@ -5,9 +5,10 @@ import Foundation
 import UserNotifications
 import XTEWalletCore
 
-/// Local "payment received" notifications. When enabled, iOS wakes the app now and then
-/// (BGAppRefreshTask, timing chosen by iOS). It scans only the blocks since the last check
-/// with the opt-in view-only keys (cannot spend) and posts a local notification.
+/// Local "payment received" notifications. When enabled (or with background sync on), iOS
+/// wakes the app now and then (BGAppRefreshTask, timing chosen by iOS). BackgroundSync scans
+/// only the blocks since the last check with the opt-in view-only keys (cannot spend) and
+/// posts a local notification.
 /// Remote push (APNs) would need a server that watches the chain with the view key,
 /// so it is not used.
 enum PaymentNotifier {
@@ -24,7 +25,7 @@ enum PaymentNotifier {
     }
 
     static func schedule() {
-        guard SecurityPrefs.shared.notifications else { return }
+        guard BackgroundSync.isWanted else { return }
         let request = BGAppRefreshTaskRequest(identifier: taskIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         try? BGTaskScheduler.shared.submit(request)
@@ -40,37 +41,10 @@ enum PaymentNotifier {
         if height + 1 > nextHeight { nextHeight = height + 1 }
     }
 
-    /// The background refresh body. Returns the amount found (for tests / logging).
-    @discardableResult
-    static func checkForPayments(deadline: Date = Date(timeIntervalSinceNow: 25)) async -> UInt64 {
+    /// The background refresh body: scans new blocks with the view-only key, announces
+    /// payments and (with background sync on) caches the blocks. See BackgroundSync.
+    static func checkForPayments(deadline: Date = Date(timeIntervalSinceNow: 25)) async {
         schedule()   // keep the chain of refreshes going
-        guard SecurityPrefs.shared.notifications, let keys = KeychainStore.loadNotificationKeys() else { return 0 }
-        let client = DaemonClient(node: Settings.selectedNode, timeout: 20)
-        guard let info = try? await client.info() else { return 0 }
-        let tip = info.networkTopHeight
-        if nextHeight == 0 || nextHeight > tip + 1 {
-            nextHeight = tip
-            return 0
-        }
-        var state = WalletState(startHeight: nextHeight)
-        let synchronizer = WalletSynchronizer(scanner: keys.scanner)
-        do {
-            while Date() < deadline {
-                if try await synchronizer.syncOnce(daemon: client, state: &state) { break }
-            }
-        } catch {
-            // Keep what was scanned so far.
-        }
-        let received = state.transactions.filter { $0.amount > 0 }.reduce(UInt64(0)) { $0 + UInt64($1.amount) }
-        if state.lastKnownBlockHeight >= nextHeight { nextHeight = state.lastKnownBlockHeight + 1 }
-        if received > 0 {
-            let content = UNMutableNotificationContent()
-            content.title = "\(XTEConfig.ticker) received"
-            content.body = "\(Amount.format(received)) arrived in your wallet."
-            content.sound = .default
-            try? await UNUserNotificationCenter.current().add(
-                UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
-        }
-        return received
+        await BackgroundSync.run(deadline: deadline)
     }
 }

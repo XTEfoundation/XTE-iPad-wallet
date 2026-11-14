@@ -9,6 +9,12 @@ struct XTEWalletApp: App {
     @StateObject private var prefs = SecurityPrefs.shared
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        // BGProcessingTask handler for long background catch-up (BGAppRefreshTask is the
+        // .backgroundTask modifier below). Registration must happen before launch completes.
+        BackgroundSync.register()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

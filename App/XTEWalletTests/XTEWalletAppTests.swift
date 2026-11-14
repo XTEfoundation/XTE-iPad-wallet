@@ -25,7 +25,7 @@ final class XTEWalletAppTests: XCTestCase {
 
     func testInfoPlist() {
         let info = Bundle.main.infoDictionary ?? [:]
-        XCTAssertEqual(info["CFBundleShortVersionString"] as? String, "1.0.1")
+        XCTAssertEqual(info["CFBundleShortVersionString"] as? String, "1.0.2")
         XCTAssertNotNil(info["NSFaceIDUsageDescription"])
         let types = info["CFBundleURLTypes"] as? [[String: Any]]
         let schemes = types?.flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] } ?? []
@@ -37,7 +37,8 @@ final class XTEWalletAppTests: XCTestCase {
         let info = Bundle.main.infoDictionary ?? [:]
         let ids = info["BGTaskSchedulerPermittedIdentifiers"] as? [String] ?? []
         XCTAssertTrue(ids.contains(PaymentNotifier.taskIdentifier))
-        XCTAssertEqual(info["UIBackgroundModes"] as? [String], ["fetch"])
+        XCTAssertTrue(ids.contains(BackgroundSync.processingIdentifier))
+        XCTAssertEqual(info["UIBackgroundModes"] as? [String], ["fetch", "processing"])
     }
 
     func testWatchOnlyWalletFileFlag() throws {
@@ -48,5 +49,13 @@ final class XTEWalletAppTests: XCTestCase {
 
     func testSecurityDefaults() {
         XCTAssertTrue(SecurityPrefs.autoLockChoices.contains { $0.seconds == 0 })
+    }
+
+    func testBackgroundSyncCacheRoundTrip() throws {
+        let cache = BackgroundSync.cache
+        cache.clear()
+        XCTAssertEqual(cache.count, 0)
+        XCTAssertTrue(cache.directory.path.hasSuffix("BackgroundSync"))
+        XCTAssertEqual(BackgroundSync.cacheConfirmations, 10)
     }
 }

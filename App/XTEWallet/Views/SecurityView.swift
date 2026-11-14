@@ -58,6 +58,17 @@ struct SecurityView: View {
                 Text("iOS wakes the app from time to time to check for new payments. This stores your view-only key (it cannot spend) so the check can run while the wallet is locked.")
             }
 
+            Section {
+                Toggle("Sync in the background", isOn: Binding(get: { prefs.backgroundSync }, set: { setBackgroundSync($0) }))
+                    .disabled(model.phase != .unlocked)
+                Toggle("Long catch-up only while charging", isOn: $prefs.backgroundSyncChargingOnly)
+                    .disabled(!prefs.backgroundSync)
+            } header: {
+                Text("Background sync")
+            } footer: {
+                Text("Downloads new blocks while the app is closed and scans them with your view-only key (it cannot spend), so the wallet is up to date right after unlocking. Paused in Low Power Mode, below 20 % battery and in Low Data Mode; limited on cellular.")
+            }
+
             if !model.isViewOnly {
                 backupSection
             }
@@ -136,6 +147,13 @@ struct SecurityView: View {
         run {
             try model.setHardwareVault(on)
             return on ? "Keys are now sealed by the Secure Enclave." : "Secure Enclave protection turned off."
+        }
+    }
+
+    private func setBackgroundSync(_ on: Bool) {
+        run {
+            try model.setBackgroundSync(on)
+            return on ? "Background sync is on." : nil
         }
     }
 

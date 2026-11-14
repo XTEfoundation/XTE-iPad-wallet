@@ -155,11 +155,24 @@ public struct SyncBlock: Codable, Equatable, Sendable {
     public let blockTimestamp: UInt64
     public let coinbaseTX: SyncTransaction?
     public let transactions: [SyncTransaction]
+
+    public init(blockHeight: UInt64, blockHash: Hash32, blockTimestamp: UInt64, coinbaseTX: SyncTransaction?, transactions: [SyncTransaction]) {
+        self.blockHeight = blockHeight
+        self.blockHash = blockHash
+        self.blockTimestamp = blockTimestamp
+        self.coinbaseTX = coinbaseTX
+        self.transactions = transactions
+    }
 }
 
 public struct SyncTopBlock: Codable, Equatable, Sendable {
     public let hash: Hash32
     public let height: UInt64
+
+    public init(hash: Hash32, height: UInt64) {
+        self.hash = hash
+        self.height = height
+    }
 }
 
 public struct WalletSyncResponse: Decodable, Sendable {
@@ -167,6 +180,13 @@ public struct WalletSyncResponse: Decodable, Sendable {
     public let items: [SyncBlock]
     public let synced: Bool?
     public let topBlock: SyncTopBlock?
+
+    public init(status: String, items: [SyncBlock], synced: Bool?, topBlock: SyncTopBlock?) {
+        self.status = status
+        self.items = items
+        self.synced = synced
+        self.topBlock = topBlock
+    }
 }
 
 public struct RandomOutputEntry: Decodable, Equatable, Sendable {
@@ -223,10 +243,14 @@ public final class DaemonClient: DaemonAPI, @unchecked Sendable {
     let session: URLSession
     let timeout: TimeInterval
 
-    public init(node: NodeInfo, session: URLSession = .shared, timeout: TimeInterval = 20) {
+    /// Try the fast xte-rpc-gateway path for wallet sync (falls back to REST automatically).
+    public let useGateway: Bool
+
+    public init(node: NodeInfo, session: URLSession = .shared, timeout: TimeInterval = 20, useGateway: Bool = true) {
         self.node = node
         self.session = session
         self.timeout = timeout
+        self.useGateway = useGateway
     }
 
     func request(_ path: String, body: [String: Any]? = nil) async throws -> Data {
@@ -268,7 +292,36 @@ public final class DaemonClient: DaemonAPI, @unchecked Sendable {
         try decode(FeeInfo.self, try await request("fee"))
     }
 
+    /// Uses the node's xte-rpc-gateway (1000 cached blocks per call) when it has one,
+    /// otherwise - and after any gateway failure - the daemon's /getwalletsyncdata.
     public func walletSyncData(checkpoints: [Hash32], startHeight: UInt64, startTimestamp: UInt64, blockCount: UInt64, skipCoinbase: Bool) async throws -> WalletSyncResponse {
+        if useGateway, let url = await GatewayRegistry.shared.endpoint(for: node, session: session) {
+            do {
+                let count = blockCount == XTEConfig.blocksPerSyncRequest ? XTEConfig.gatewayBlocksPerRequest : blockCount
+                var req = URLRequest(url: url)
+                req.httpMethod = "POST"
+                req.timeoutInterval = max(timeout, 30)
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.setValue("application/json", forHTTPHeaderField: "Accept")
+                req.httpBody = Gateway.syncRequestBody(checkpoints: checkpoints, startHeight: startHeight, startTimestamp: startTimestamp,
+                                                       blockCount: count, skipCoinbase: skipCoinbase)
+                let (data, response) = try await session.data(for: req)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw DaemonError.http(http.statusCode)
+                }
+                return try Gateway.decodeSync(data)
+            } catch {
+                if Task.isCancelled || isCancellation(error) { throw CancellationError() }
+                // Fall through to REST and avoid the gateway for a while.
+                await GatewayRegistry.shared.markFailed(node)
+            }
+        }
+        return try await restWalletSyncData(checkpoints: checkpoints, startHeight: startHeight, startTimestamp: startTimestamp,
+                                            blockCount: blockCount, skipCoinbase: skipCoinbase)
+    }
+
+    /// The daemon's own REST sync call (always available).
+    public func restWalletSyncData(checkpoints: [Hash32], startHeight: UInt64, startTimestamp: UInt64, blockCount: UInt64, skipCoinbase: Bool) async throws -> WalletSyncResponse {
         let body: [String: Any] = [
             "blockHashCheckpoints": checkpoints.map(\.hex),
             "startHeight": startHeight,

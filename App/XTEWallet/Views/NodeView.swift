@@ -13,6 +13,7 @@ struct NodeView: View {
         Form {
             Section("Current node") {
                 LabeledContent("Node", value: "\(model.node.name) (\(model.node.baseURL.absoluteString))")
+                LabeledContent("Sync path", value: model.fastPathActive ? "Fast RPC gateway (\(Gateway.endpoint(for: model.node).absoluteString))" : "Node REST API")
                 if let info = model.daemonInfo {
                     LabeledContent("Node height", value: "\(info.localHeight)")
                     LabeledContent("Network height", value: "\(info.networkTopHeight)")
