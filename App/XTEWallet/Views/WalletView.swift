@@ -41,7 +41,7 @@ struct WalletView: View {
             }
         }
         .navigationTitle("Wallet")
-        .refreshable { model.restartSync() }
+        .refreshable { await model.syncNow() }
     }
 }
 
@@ -106,6 +106,7 @@ struct TransactionsView: View {
             }
         }
         .overlay { if model.state.transactions.isEmpty { Text("No transactions yet").foregroundStyle(.secondary) } }
+        .refreshable { await model.syncNow() }
         .navigationTitle("Transactions")
     }
 }

@@ -27,6 +27,10 @@ final class AppModel: ObservableObject {
     private var switchingNodeInSync = false
     /// Incremented per restart; a superseded sync loop never touches the UI state.
     private var syncGeneration = 0
+    /// Finished passes of the sync loop (success or failure); pull-to-refresh waits for the next one.
+    private var syncPass = 0
+    /// Set by pull-to-refresh: skip the idle wait between passes.
+    private var syncWakeRequested = false
     @Published var nodes: [NodeInfo] = [XTEConfig.defaultNode]
     @Published var pendingURI: PaymentURI?
     /// Pre-filled Send screen from Siri, widgets, Handoff or a notification.
@@ -378,13 +382,43 @@ final class AppModel: ObservableObject {
                     if failures >= 3 { self.syncError = error.localizedDescription }
                 }
                 self.isSyncing = false
+                self.syncPass &+= 1
                 if caughtUp {
-                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                    await self.idle(seconds: 15)
                 } else if failed {
-                    try? await Task.sleep(nanoseconds: UInt64(min(failures, 6)) * 2_500_000_000)
+                    await self.idle(seconds: Double(min(failures, 6)) * 2.5)
                 }
             }
         }
+    }
+
+    /// Waits between sync passes; pull-to-refresh ends the wait early.
+    private func idle(seconds: Double) async {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline && !Task.isCancelled {
+            if syncWakeRequested { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        syncWakeRequested = false
+    }
+
+    /// Pull to refresh: runs a sync pass now (gateway first, REST fallback inside the daemon
+    /// client) and returns when it has finished, so the spinner stays until then. A pull while
+    /// a pass is running joins it - the running sync is never cancelled (no "cancelled" error).
+    func syncNow() async {
+        guard phase == .unlocked else { return }
+        if syncTask == nil { restartSync() }
+        let generation = syncGeneration
+        // A pass already running may have started before the pull: wait for the one after it.
+        let target = syncPass + (isSyncing ? 2 : 1)
+        syncWakeRequested = true
+        let deadline = Date().addingTimeInterval(90)
+        while syncPass < target, syncGeneration == generation, phase == .unlocked, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            // The first pass finished caught up and the loop is idle again: one is enough.
+            if !isSyncing, syncPass >= target - 1, isWalletSynced, !syncWakeRequested { break }
+        }
+        publishPlatformState()
     }
 
     /// Adopts a freshly synced state while keeping sends that were broadcast during the network call.
