@@ -19,15 +19,22 @@ final class AppModel: ObservableObject {
     @Published var nodes: [NodeInfo] = [XTEConfig.defaultNode]
     @Published var pendingURI: PaymentURI?
     @Published var lastError: String?
+    /// Set after create/restore so the UI can offer Security & Backup once.
+    @Published var offerSecuritySetup = false
+    @Published private(set) var isViewOnly = false
 
     private var keys: WalletKeys?
+    private var viewKeys: ViewOnlyKeys?
     private var syncTask: Task<Void, Never>?
+    private var backgroundedAt: Date?
+    let prefs = SecurityPrefs.shared
 
     init() {
         node = Settings.selectedNode
         if let file = WalletStore.load() {
             address = file.address
             state = file.state
+            isViewOnly = file.viewOnly ?? false
             phase = .locked
         } else {
             phase = .onboarding
@@ -54,6 +61,8 @@ final class AppModel: ObservableObject {
 
     func createWallet(_ newKeys: WalletKeys, scanHeight: UInt64?) throws {
         try KeychainStore.save(newKeys)
+        viewKeys = nil
+        isViewOnly = false
         var s = WalletState()
         if let h = scanHeight {
             s.startHeight = h
@@ -66,17 +75,44 @@ final class AppModel: ObservableObject {
         state = s
         try persist()
         phase = .unlocked
+        offerSecuritySetup = !prefs.setupOffered
         restartSync()
+    }
+
+    /// Watch-only wallet (offline signer / hardware wallet): sees incoming payments, cannot spend.
+    func createWatchOnlyWallet(_ view: ViewOnlyKeys, scanHeight: UInt64) throws {
+        try KeychainStore.save(viewOnly: view)
+        keys = nil
+        viewKeys = view
+        isViewOnly = true
+        address = view.address.encoded()
+        state = WalletState(startHeight: scanHeight)
+        try persist()
+        phase = .unlocked
+        offerSecuritySetup = !prefs.setupOffered
+        restartSync()
+    }
+
+    /// Restores from an encrypted backup (phone or iPad format).
+    func restoreBackup(_ text: String, password: String) throws {
+        let (backupAddress, secrets) = try WalletBackup.decrypt(text, password: password)
+        let restored = try WalletKeys.fromKeys(privateSpendKeyHex: secrets.spendKey, privateViewKeyHex: secrets.viewKey)
+        guard restored.address.encoded() == backupAddress else { throw WalletBackupError.corrupt }
+        try createWallet(restored, scanHeight: secrets.scanHeight)
     }
 
     func unlock() {
         do {
-            let k = try KeychainStore.load(reason: "Unlock your XTE wallet")
-            guard k.address.encoded() == address else {
+            let stored = try KeychainStore.loadWallet(reason: "Unlock your \(XTEConfig.ticker) wallet")
+            guard stored.address == address else {
                 lastError = "Keychain keys do not match this wallet."
                 return
             }
-            keys = k
+            switch stored {
+            case .full(let k): keys = k; viewKeys = nil
+            case .viewOnly(let v): keys = nil; viewKeys = v
+            }
+            lastError = nil
             phase = .unlocked
             restartSync()
         } catch {
@@ -88,12 +124,88 @@ final class AppModel: ObservableObject {
         syncTask?.cancel()
         syncTask = nil
         keys = nil
+        viewKeys = nil
         if phase == .unlocked { phase = .locked }
+    }
+
+    // MARK: Auto-lock
+
+    func didEnterBackground() {
+        backgroundedAt = Date()
+        try? persist()
+        if prefs.autoLockSeconds == 0 { lock() }
+        PaymentNotifier.schedule()
+    }
+
+    func didBecomeActive() {
+        defer { backgroundedAt = nil }
+        if let t = backgroundedAt, Date().timeIntervalSince(t) >= TimeInterval(prefs.autoLockSeconds) { lock() }
+    }
+
+    // MARK: Security settings
+
+    /// Re-writes the Keychain item with or without the Secure Enclave wrap.
+    func setHardwareVault(_ on: Bool) throws {
+        let stored: StoredWallet
+        if let keys { stored = .full(keys) } else if let viewKeys { stored = .viewOnly(viewKeys) } else {
+            throw TransferError.viewOnlyWallet
+        }
+        let previous = prefs.hardwareVault
+        prefs.hardwareVault = on
+        do {
+            try KeychainStore.save(stored)
+        } catch {
+            prefs.hardwareVault = previous
+            throw error
+        }
+    }
+
+    func setNotifications(_ on: Bool) async throws {
+        if on {
+            guard await PaymentNotifier.requestPermission() else {
+                throw NSError(domain: "Notifications", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "Allow notifications for this app in iOS Settings."])
+            }
+            let view = keys.map(ViewOnlyKeys.init(keys:)) ?? viewKeys
+            guard let view else { throw TransferError.viewOnlyWallet }
+            try KeychainStore.saveNotificationKeys(view)
+            PaymentNotifier.markSeen(height: state.lastKnownBlockHeight)
+            prefs.notifications = true
+            PaymentNotifier.schedule()
+        } else {
+            prefs.notifications = false
+            KeychainStore.deleteNotificationKeys()
+            PaymentNotifier.cancel()
+        }
+    }
+
+    /// Encrypted backup text; asks for Face ID / passcode first.
+    func encryptedBackup(password: String) async throws -> String {
+        let k = try await keysForBackup()
+        let height = state.startHeight > 0 ? state.startHeight
+            : (state.startTimestamp > 0 ? ScanHeight.scanHeight(forWalletCreatedAt: Date(timeIntervalSince1970: TimeInterval(state.startTimestamp))) : 0)
+        let secrets = BackupSecrets(spendKey: k.privateSpendKey.hex, viewKey: k.privateViewKey.hex, scanHeight: height,
+                                    createdAt: ISO8601DateFormatter().string(from: Date()))
+        let address = self.address
+        return try await Task.detached(priority: .userInitiated) {
+            try WalletBackup.encrypt(secrets, address: address, password: password)
+        }.value
+    }
+
+    /// Watch-only code for this wallet (view key + address); asks for Face ID / passcode first.
+    func watchOnlyCode() async throws -> String {
+        try await KeychainStore.authenticate(reason: "Show the watch-only code")
+        let view = keys.map(ViewOnlyKeys.init(keys:)) ?? viewKeys
+        guard let view else { throw TransferError.viewOnlyWallet }
+        return WatchOnlyPayload(address: address, viewKey: view.privateViewKey.hex, scanHeight: state.startHeight).encoded()
     }
 
     func deleteWallet() throws {
         lock()
         try KeychainStore.delete()
+        KeychainStore.deleteNotificationKeys()
+        PaymentNotifier.cancel()
+        prefs.resetForNewWallet()
         WalletStore.delete()
         state = WalletState()
         address = ""
@@ -102,6 +214,7 @@ final class AppModel: ObservableObject {
 
     /// Requires a fresh Face ID / Touch ID / passcode check, then returns the keys for display.
     func keysForBackup() async throws -> WalletKeys {
+        if isViewOnly { throw TransferError.viewOnlyWallet }
         try await KeychainStore.authenticate(reason: "Show your private keys and mnemonic seed")
         if let keys { return keys }
         return try KeychainStore.load(reason: "Show your private keys and mnemonic seed")
@@ -114,7 +227,7 @@ final class AppModel: ObservableObject {
     }
 
     private func persist() throws {
-        try WalletStore.save(WalletFile(address: address, state: state))
+        try WalletStore.save(WalletFile(address: address, state: state, viewOnly: isViewOnly ? true : nil))
     }
 
     // MARK: Node
@@ -157,8 +270,10 @@ final class AppModel: ObservableObject {
 
     func restartSync() {
         syncTask?.cancel()
-        guard phase == .unlocked, let keys else { return }
-        let synchronizer = WalletSynchronizer(scanner: BlockScanner(keys: keys))
+        guard phase == .unlocked else { return }
+        let scanner: BlockScanner
+        if let keys { scanner = BlockScanner(keys: keys) } else if let viewKeys { scanner = viewKeys.scanner } else { return }
+        let synchronizer = WalletSynchronizer(scanner: scanner)
         let client = daemon
         syncTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -184,6 +299,7 @@ final class AppModel: ObservableObject {
                         self.state = s
                     }
                     try? self.persist()
+                    if caughtUp { PaymentNotifier.markSeen(height: self.state.lastKnownBlockHeight) }
                     self.syncError = nil
                 } catch is CancellationError {
                     return

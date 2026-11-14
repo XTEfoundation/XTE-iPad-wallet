@@ -6,12 +6,18 @@ import XTEWalletCore
 @main
 struct XTEWalletApp: App {
     @StateObject private var model = AppModel()
+    @StateObject private var prefs = SecurityPrefs.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(model)
+                .environmentObject(prefs)
+                .overlay {
+                    // Hides balances and keys in the app switcher snapshot.
+                    if prefs.screenProtection && scenePhase != .active { PrivacyCover() }
+                }
                 .onOpenURL { url in
                     if let uri = try? PaymentURI.parse(url.absoluteString) {
                         model.pendingURI = uri
@@ -19,8 +25,16 @@ struct XTEWalletApp: App {
                 }
         }
         .onChange(of: scenePhase) { phase in
-            // Drop keys from memory when the app leaves the foreground.
-            if phase == .background { model.lock() }
+            // Drop keys from memory when the app leaves the foreground (or after the
+            // auto-lock delay chosen in Security & Backup).
+            switch phase {
+            case .background: model.didEnterBackground()
+            case .active: model.didBecomeActive()
+            default: break
+            }
+        }
+        .backgroundTask(.appRefresh(PaymentNotifier.taskIdentifier)) {
+            await PaymentNotifier.checkForPayments()
         }
     }
 }
@@ -54,13 +68,36 @@ enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
 
 struct RootView: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var prefs: SecurityPrefs
+    @State private var integrityWarnings: [String] = []
 
     var body: some View {
-        switch model.phase {
-        case .onboarding: OnboardingView()
-        case .locked: LockedView()
-        case .unlocked: MainSplitView()
+        Group {
+            switch model.phase {
+            case .onboarding: OnboardingView()
+            case .locked: LockedView()
+            case .unlocked: MainSplitView()
+            }
         }
+        .onAppear { integrityWarnings = DeviceIntegrity.indicators() }
+        .alert("This iPad looks jailbroken", isPresented: Binding(
+            get: { !integrityWarnings.isEmpty && !prefs.compromisedAcknowledged },
+            set: { if !$0 { prefs.compromisedAcknowledged = true } })) {
+            Button("I understand the risk") { prefs.compromisedAcknowledged = true }
+        } message: {
+            Text("Other apps may be able to read your wallet keys. Use a device that is not jailbroken for real funds.\n\n"
+                 + integrityWarnings.joined(separator: "\n"))
+        }
+    }
+}
+
+struct PrivacyCover: View {
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.ultraThickMaterial)
+            Image(systemName: "lock.shield").font(.system(size: 64)).foregroundStyle(.secondary)
+        }
+        .ignoresSafeArea()
     }
 }
 
@@ -88,6 +125,10 @@ struct MainSplitView: View {
         }
         .onChange(of: model.pendingURI) { uri in
             if uri != nil { selection = .send }
+        }
+        .sheet(isPresented: $model.offerSecuritySetup) {
+            NavigationStack { SecurityView(setup: true) }
+                .interactiveDismissDisabled()
         }
     }
 }

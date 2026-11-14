@@ -20,12 +20,17 @@ struct SettingsView: View {
                 LabeledContent("Decimals", value: "\(XTEConfig.decimalPlaces)")
             }
             Section("Security") {
+                NavigationLink { SecurityView() } label: { Label("Security & Backup", systemImage: "lock.shield") }
+                NavigationLink { HardwareWalletView() } label: { Label("Hardware wallet / watch-only", systemImage: "cpu") }
                 Button("Show backup (seed & keys)") {
                     Task {
                         do { backupKeys = try await model.keysForBackup() } catch { self.error = error.localizedDescription }
                     }
                 }
                 Button("Lock wallet") { model.lock() }
+            }
+            Section("Exchange") {
+                NavigationLink { SwapView() } label: { Label("Swap from XMR", systemImage: "arrow.left.arrow.right") }
             }
             Section("Sync") {
                 TextField("Rescan from height", text: $rescanHeight).keyboardType(.numberPad)

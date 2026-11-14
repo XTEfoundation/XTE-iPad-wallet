@@ -12,6 +12,10 @@ let package = Package(
     products: [
         .library(name: "XTEWalletCore", targets: ["XTEWalletCore"]),
     ],
+    dependencies: [
+        // CryptoKit API on Linux (CI core tests); on Apple platforms CryptoKit itself is used.
+        .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"4.0.0"),
+    ],
     targets: [
         // Vendored CryptoNote ed25519 + Keccak from TRRXITTE/traaitt (src/crypto),
         // plus a C port of crypto.cpp exposed through include/xte_crypto.h.
@@ -22,7 +26,10 @@ let package = Package(
         ),
         .target(
             name: "XTEWalletCore",
-            dependencies: ["CXTECrypto"],
+            dependencies: [
+                "CXTECrypto",
+                .product(name: "Crypto", package: "swift-crypto", condition: .when(platforms: [.linux])),
+            ],
             path: "Sources/XTEWalletCore"
         ),
         .testTarget(

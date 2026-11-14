@@ -8,6 +8,8 @@ import XTEWalletCore
 struct WalletFile: Codable {
     var address: String
     var state: WalletState
+    /// true for a watch-only (offline signer / hardware) wallet; nil for older files.
+    var viewOnly: Bool?
 }
 
 enum WalletStore {

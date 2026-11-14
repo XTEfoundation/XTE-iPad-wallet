@@ -27,6 +27,11 @@ struct SendView: View {
 
     var body: some View {
         Form {
+            if model.isViewOnly {
+                Section {
+                    Label("Watch-only wallet: sign and send from the offline device that holds the spend key.", systemImage: "eye")
+                }
+            }
             Section("Recipient") {
                 TextField("XTE address or xte:// link", text: $addressText, axis: .vertical)
                     .font(.body.monospaced()).textInputAutocapitalization(.never).autocorrectionDisabled()
