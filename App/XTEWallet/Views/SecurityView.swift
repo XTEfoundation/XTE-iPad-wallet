@@ -75,8 +75,8 @@ struct SecurityView: View {
         }
         .navigationTitle(setup ? "Protect your wallet" : "Security & Backup")
         .toolbar {
-            if setup {
-                ToolbarItem(placement: .confirmationAction) {
+            ToolbarItem(placement: .confirmationAction) {
+                if setup {
                     Button("Done") {
                         prefs.setupOffered = true
                         model.offerSecuritySetup = false

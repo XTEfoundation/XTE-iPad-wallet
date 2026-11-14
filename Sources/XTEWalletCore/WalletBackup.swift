@@ -154,9 +154,9 @@ public enum WalletBackup {
         let pass = Data(password.utf8)
         #if canImport(CommonCrypto)
         var out = Data(count: keyLength)
-        let rc = out.withUnsafeMutableBytes { outPtr in
-            salt.withUnsafeBytes { saltPtr in
-                pass.withUnsafeBytes { passPtr in
+        let rc = out.withUnsafeMutableBytes { (outPtr: UnsafeMutableRawBufferPointer) -> Int32 in
+            salt.withUnsafeBytes { (saltPtr: UnsafeRawBufferPointer) -> Int32 in
+                pass.withUnsafeBytes { (passPtr: UnsafeRawBufferPointer) -> Int32 in
                     CCKeyDerivationPBKDF(CCPBKDFAlgorithm(kCCPBKDF2),
                                          passPtr.baseAddress?.assumingMemoryBound(to: Int8.self), pass.count,
                                          saltPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), salt.count,
@@ -165,7 +165,7 @@ public enum WalletBackup {
                 }
             }
         }
-        if rc == kCCSuccess { return out }
+        if rc == Int32(kCCSuccess) { return out }
         #endif
         return pbkdf2Portable(password: pass, salt: salt, iterations: iterations, keyLength: keyLength)
     }
@@ -176,16 +176,14 @@ public enum WalletBackup {
         var derived = Data()
         var block: UInt32 = 1
         while derived.count < keyLength {
-            var input = salt
-            withUnsafeBytes(of: block.bigEndian) { input.append(contentsOf: $0) }
-            var u = Data(HMAC<SHA256>.authenticationCode(for: input, using: key))
-            var t = [UInt8](u)
+            var input = [UInt8](salt)
+            input += [UInt8(block >> 24 & 0xff), UInt8(block >> 16 & 0xff), UInt8(block >> 8 & 0xff), UInt8(block & 0xff)]
+            var u = [UInt8](HMAC<SHA256>.authenticationCode(for: input, using: key))
+            var t = u
             if iterations > 1 {
                 for _ in 1..<iterations {
-                    u = Data(HMAC<SHA256>.authenticationCode(for: u, using: key))
-                    u.withUnsafeBytes { bytes in
-                        for i in 0..<t.count { t[i] ^= bytes[i] }
-                    }
+                    u = [UInt8](HMAC<SHA256>.authenticationCode(for: u, using: key))
+                    for i in 0..<t.count { t[i] ^= u[i] }
                 }
             }
             derived.append(contentsOf: t)

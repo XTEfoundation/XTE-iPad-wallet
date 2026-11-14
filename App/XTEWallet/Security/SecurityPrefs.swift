@@ -22,8 +22,16 @@ final class SecurityPrefs: ObservableObject {
     @Published var lastCloudBackup: Date? { didSet { defaults.set(lastCloudBackup, forKey: "sec.lastCloudBackup") } }
     @Published var lastFileBackup: Date? { didSet { defaults.set(lastFileBackup, forKey: "sec.lastFileBackup") } }
 
-    static let autoLockChoices: [(seconds: Int, title: String)] = [
-        (0, "Immediately"), (60, "After 1 minute"), (300, "After 5 minutes"), (900, "After 15 minutes"),
+    struct AutoLockChoice: Hashable {
+        let seconds: Int
+        let title: String
+    }
+
+    static let autoLockChoices: [AutoLockChoice] = [
+        AutoLockChoice(seconds: 0, title: "Immediately"),
+        AutoLockChoice(seconds: 60, title: "After 1 minute"),
+        AutoLockChoice(seconds: 300, title: "After 5 minutes"),
+        AutoLockChoice(seconds: 900, title: "After 15 minutes"),
     ]
 
     private init() {
